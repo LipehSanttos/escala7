@@ -24,6 +24,8 @@ data/
 *.db-journal
 *.sqlite
 *.sqlite3
+supabase/seed_data.sql
+
 
 # Arquivos de planejamento interno e temporários
 .planning/
