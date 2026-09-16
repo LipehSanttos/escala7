@@ -11,24 +11,31 @@ export async function GET(request: Request) {
 
     // 1. Fluxo via Supabase (Cloudflare / Produção)
     if (supabase) {
-      // Buscar todas as datas com escalas publicadas
-      const { data: allItems, error: itemsErr } = await supabase
-        .from("schedule_items")
-        .select(`
-          date,
-          service_type,
-          role_id,
-          member_id,
-          notes,
-          roles(id, name, department_id),
-          departments:roles(departments(id, name, color, icon)),
-          members(id, name, phone, is_active),
-          schedules!inner(id, status)
-        `)
-        .eq("schedules.status", "published")
-        .order("date", { ascending: true });
+      // Buscar lista completa de departamentos para mapeamento sem falhas
+      const [{ data: allDepts }, { data: allItems, error: itemsErr }] = await Promise.all([
+        supabase.from("departments").select("*"),
+        supabase
+          .from("schedule_items")
+          .select(`
+            id,
+            date,
+            service_type,
+            role_id,
+            member_id,
+            notes,
+            roles(id, name, department_id),
+            members(id, name, phone, is_active),
+            schedules!inner(id, status, department_id)
+          `)
+          .eq("schedules.status", "published")
+          .order("date", { ascending: true })
+      ]);
 
       if (itemsErr) throw itemsErr;
+
+      const deptMap = new Map<string, { id: string; name: string; color: string; icon: string }>(
+        (allDepts || []).map(d => [d.id, d])
+      );
 
       const rawItems = allItems || [];
       const distinctDatesMap = new Map<string, { date: string; service_type: string; count: number }>();
@@ -46,7 +53,6 @@ export async function GET(request: Request) {
 
       const availableDates = Array.from(distinctDatesMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-      // Se nenhuma data foi requisitada, seleciona a data de hoje ou a mais próxima
       if (!requestedDate && availableDates.length > 0) {
         const todayStr = new Date().toISOString().split("T")[0];
         const exactToday = availableDates.find(d => d.date === todayStr);
@@ -56,7 +62,6 @@ export async function GET(request: Request) {
 
       const dayItems = rawItems.filter(i => i.date === requestedDate);
 
-      // Agrupar por departamento de forma dinâmica
       const deptsMap = new Map<string, {
         id: string;
         name: string;
@@ -71,11 +76,13 @@ export async function GET(request: Request) {
         if (!detectedServiceType && it.service_type) detectedServiceType = it.service_type;
 
         const role = (it as any).roles;
-        const dept = role?.departments || (it as any).departments;
-        const deptId = dept?.id || role?.department_id || "outros";
-        const deptName = dept?.name || "Geral";
-        const deptColor = dept?.color || "#002F6C";
-        const deptIcon = dept?.icon || "Calendar";
+        const schedule = (it as any).schedules;
+        const deptId = role?.department_id || schedule?.department_id || "diaconato";
+        const deptInfo = deptMap.get(deptId);
+
+        const deptName = deptInfo?.name || (deptId === "sonoplastia" ? "Sonoplastia e Mídia" : deptId === "diaconato" ? "Diaconato" : deptId);
+        const deptColor = deptInfo?.color || "#002F6C";
+        const deptIcon = deptInfo?.icon || "Calendar";
 
         if (!deptsMap.has(deptId)) {
           deptsMap.set(deptId, {

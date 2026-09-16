@@ -17,12 +17,10 @@ import {
   Music, 
   Crown, 
   Users,
-  Clock,
-  MapPin
+  Clock
 } from "lucide-react";
 import { IasdLogo } from "./IasdLogo";
 import { toJpeg } from "html-to-image";
-import { formatDateWithWeekday, formatDateDDMMAAAA } from "@/lib/dateUtils";
 
 interface DailyItem {
   role_name: string;
@@ -47,6 +45,33 @@ interface AvailableDate {
 interface Props {
   churchName?: string;
   district?: string;
+}
+
+// Extrai "Dia XX - DiaDaSemana" (ex: "Dia 16 - Quarta-feira")
+function formatDayAndWeekday(dateStr: string) {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-").map(Number);
+  if (parts.length < 3) return dateStr;
+  const [year, month, day] = parts;
+  const d = new Date(year, month - 1, day, 12, 0, 0);
+  const weekdays = [
+    "Domingo",
+    "Segunda-feira",
+    "Terça-feira",
+    "Quarta-feira",
+    "Quinta-feira",
+    "Sexta-feira",
+    "Sábado",
+  ];
+  const weekdayName = weekdays[d.getDay()];
+  return `Dia ${day} - ${weekdayName}`;
+}
+
+// Extrai apenas o número do dia para o seletor (ex: 16)
+function getDayNumber(dateStr: string) {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-");
+  return parts.length === 3 ? parseInt(parts[2], 10) : dateStr;
 }
 
 // Mapeamento de ícones dinâmicos por departamento
@@ -80,7 +105,6 @@ export function DailyScheduleCard({ churchName, district }: Props) {
 
   const cardRef = useRef<HTMLDivElement>(null);
 
-  // Carrega as escalas da data selecionada
   useEffect(() => {
     fetchDailyData(selectedDate);
   }, [selectedDate]);
@@ -109,7 +133,6 @@ export function DailyScheduleCard({ churchName, district }: Props) {
     }
   };
 
-  // Navegação entre as datas com escala
   const currentIndex = availableDates.findIndex((d) => d.date === selectedDate);
   const hasPrevious = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < availableDates.length - 1;
@@ -126,7 +149,6 @@ export function DailyScheduleCard({ churchName, district }: Props) {
     }
   };
 
-  // Gerar e Baixar a Imagem Oficial do Dia (WhatsApp/Instagram)
   const handleDownloadImage = async () => {
     const node = cardRef.current;
     if (!node) return;
@@ -151,7 +173,8 @@ export function DailyScheduleCard({ churchName, district }: Props) {
       });
 
       const link = document.createElement("a");
-      link.download = `escala_culto_${selectedDate.replace(/-/g, "_")}.jpg`;
+      const dayNum = getDayNumber(selectedDate);
+      link.download = `escala_dia_${dayNum}_culto.jpg`;
       link.href = dataUrl;
       link.click();
     } catch (err) {
@@ -161,19 +184,18 @@ export function DailyScheduleCard({ churchName, district }: Props) {
     }
   };
 
-  // Copiar o texto do dia para colar no WhatsApp
   const handleCopyText = () => {
     if (!departments || departments.length === 0) return;
 
-    const formattedDate = formatDateWithWeekday(selectedDate);
+    const dayText = formatDayAndWeekday(selectedDate);
     let text = `⛪ *${churchName || "Igreja Adventista do Sétimo Dia"}*\n`;
-    text += `📅 *ESCALA DO DIA: ${formattedDate.toUpperCase()}*\n`;
+    text += `📅 *${dayText.toUpperCase()}*\n`;
     text += `📖 *${serviceType}*\n\n`;
 
     departments.forEach((dept) => {
-      text += `🔹 *${dept.name.toUpperCase()}*\n`;
+      text += `🔹 *${dept.name.toUpperCase()}:*\n`;
       dept.items.forEach((item) => {
-        text += ` • ${item.member_name} (${item.role_name})\n`;
+        text += `  • ${item.member_name} (${item.role_name})\n`;
       });
       text += `\n`;
     });
@@ -186,34 +208,7 @@ export function DailyScheduleCard({ churchName, district }: Props) {
     setTimeout(() => setCopied(false), 2500);
   };
 
-  // Compartilhar via Web Share API se disponível no dispositivo móvel
-  const handleShareMobile = async () => {
-    if (navigator.share) {
-      const formattedDate = formatDateWithWeekday(selectedDate);
-      let text = `Escala de Culto - ${formattedDate} (${serviceType})\n\n`;
-      departments.forEach((dept) => {
-        text += `${dept.name}:\n`;
-        dept.items.forEach((item) => {
-          text += ` - ${item.member_name} (${item.role_name})\n`;
-        });
-        text += `\n`;
-      });
-
-      try {
-        await navigator.share({
-          title: `Escala do Dia - ${churchName || "IASD"}`,
-          text: text,
-          url: window.location.href,
-        });
-      } catch (e) {
-        // Usuário cancelou
-      }
-    } else {
-      handleCopyText();
-    }
-  };
-
-  const formattedDateTitle = selectedDate ? formatDateWithWeekday(selectedDate) : "Carregando data...";
+  const dayWeekdayTitle = formatDayAndWeekday(selectedDate);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 sm:p-7 space-y-6">
@@ -222,19 +217,19 @@ export function DailyScheduleCard({ churchName, district }: Props) {
         <div>
           <div className="inline-flex items-center gap-2 bg-[#002F6C]/10 text-[#002F6C] px-3 py-1 rounded-full text-xs font-bold mb-1.5">
             <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-            <span>Escala Consolidada do Dia</span>
+            <span>Escalas do Dia</span>
           </div>
           <h2 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
             Culto do Dia • Todos os Departamentos
           </h2>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Visão unificada das equipes escaladas para o culto de cada data.
+            Consulte as equipes escaladas para cada dia de culto da igreja.
           </p>
         </div>
 
-        {/* Seletor de Datas e Ações */}
+        {/* Seletor de Datas (Apenas o Dia + Culto) e Ações */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {/* Navegador de Dias com Escala */}
+          {/* Navegador de Dias: Mostra apenas o número do dia e o culto */}
           <div className="inline-flex items-center bg-slate-100 rounded-lg p-1 border border-slate-200 text-xs">
             <button
               onClick={handlePreviousDate}
@@ -256,7 +251,7 @@ export function DailyScheduleCard({ churchName, district }: Props) {
               >
                 {availableDates.map((d) => (
                   <option key={d.date} value={d.date}>
-                    {formatDateDDMMAAAA(d.date)} • {d.service_type.split("(")[0].trim()}
+                    Dia {getDayNumber(d.date)} • {d.service_type}
                   </option>
                 ))}
               </select>
@@ -274,7 +269,7 @@ export function DailyScheduleCard({ churchName, district }: Props) {
             </button>
           </div>
 
-          {/* Botão de Baixar Imagem */}
+          {/* Botão de Gerar Imagem */}
           <button
             onClick={handleDownloadImage}
             disabled={downloading || departments.length === 0}
@@ -297,14 +292,14 @@ export function DailyScheduleCard({ churchName, district }: Props) {
         </div>
       </div>
 
-      {/* ÁREA DO CARD OFICIAL PARA VISUALIZAÇÃO E DOWNLOAD (RENDERIZÁVEL COMO IMAGEM) */}
+      {/* ÁREA DO CARD OFICIAL PARA VISUALIZAÇÃO E DOWNLOAD */}
       <div className="overflow-x-auto pb-2">
         <div
           ref={cardRef}
           className="min-w-[340px] max-w-3xl mx-auto bg-white rounded-2xl overflow-hidden border border-slate-200 shadow-md flex flex-col"
           style={{ backgroundColor: "#FFFFFF" }}
         >
-          {/* Topo Institucional do Card com Gradiente Azul Oficial IASD */}
+          {/* Topo Institucional do Card */}
           <div className="bg-gradient-to-r from-[#002F6C] via-[#003882] to-[#044B9E] text-white p-6 sm:p-8 relative overflow-hidden">
             <div className="absolute -right-8 -bottom-8 opacity-10 pointer-events-none">
               <IasdLogo className="w-48 h-48 text-white" />
@@ -320,31 +315,31 @@ export function DailyScheduleCard({ churchName, district }: Props) {
                     {churchName || "Igreja Adventista do Sétimo Dia"}
                   </h3>
                   <p className="text-xs text-blue-100/80">
-                    {district || "Distrito Central"} • Culto Eclesiástico
+                    {district || "Distrito Central"}
                   </p>
                 </div>
               </div>
 
-              {/* Selo do Culto */}
+              {/* Badge do Culto */}
               <div className="self-start sm:self-auto bg-amber-400/20 text-amber-200 border border-amber-400/40 px-3 py-1 rounded-full text-xs font-bold flex items-center gap-1.5 backdrop-blur-xs">
                 <Clock className="w-3.5 h-3.5 text-amber-400" />
                 <span>{serviceType}</span>
               </div>
             </div>
 
-            {/* Destaque Central da Data */}
+            {/* Destaque Central: Apenas o Dia e o Dia da Semana (ex: Dia 16 - Quarta-feira) */}
             <div className="mt-5 pt-4 border-t border-white/15">
               <span className="text-xs uppercase tracking-widest text-amber-300/90 font-extrabold block">
                 Escala do Culto
               </span>
-              <h1 className="text-xl sm:text-3xl font-black text-white capitalize tracking-tight mt-0.5">
-                {formattedDateTitle}
+              <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight mt-0.5">
+                {dayWeekdayTitle || "Carregando..."}
               </h1>
             </div>
           </div>
 
-          {/* Corpo do Card com os Departamentos Agrupados */}
-          <div className="p-6 sm:p-8 bg-slate-50/50 space-y-6 flex-1">
+          {/* Corpo do Card com Cada Departamento e Seus Escalados */}
+          <div className="p-6 sm:p-8 bg-slate-50/60 space-y-5 flex-1">
             {loading ? (
               <div className="py-12 text-center text-slate-400 text-sm">
                 Carregando escalas do dia...
@@ -353,10 +348,10 @@ export function DailyScheduleCard({ churchName, district }: Props) {
               <div className="py-12 text-center space-y-2">
                 <Calendar className="w-10 h-10 text-slate-300 mx-auto" />
                 <p className="text-sm font-bold text-slate-700">
-                  Nenhum departamento escalado para esta data.
+                  Nenhum departamento escalado para este dia.
                 </p>
                 <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                  Selecione outra data nos botões acima ou consulte as escalas completas do mês vigente.
+                  Navegue pelas outras datas no seletor acima para ver as escalas disponíveis.
                 </p>
               </div>
             ) : (
@@ -364,9 +359,9 @@ export function DailyScheduleCard({ churchName, district }: Props) {
                 {departments.map((dept) => (
                   <div
                     key={dept.id}
-                    className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs hover:shadow-xs transition"
+                    className="bg-white rounded-xl border border-slate-200/90 overflow-hidden shadow-2xs hover:shadow-xs transition flex flex-col justify-between"
                   >
-                    {/* Cabeçalho do Departamento */}
+                    {/* Título do Departamento (ex: Sonoplastia, Diaconato, etc.) */}
                     <div
                       className="px-4 py-2.5 flex items-center justify-between text-white"
                       style={{ backgroundColor: dept.color || "#002F6C" }}
@@ -375,17 +370,17 @@ export function DailyScheduleCard({ churchName, district }: Props) {
                         <div className="p-1 rounded bg-white/20">
                           {getDeptIcon(dept.icon)}
                         </div>
-                        <span className="font-extrabold text-xs uppercase tracking-wide">
+                        <span className="font-extrabold text-sm tracking-wide">
                           {dept.name}
                         </span>
                       </div>
                       <span className="text-[10px] font-bold bg-black/20 px-2 py-0.5 rounded-full">
-                        {dept.items.length} escalado{dept.items.length > 1 ? "s" : ""}
+                        {dept.items.length} {dept.items.length > 1 ? "escalados" : "escalado"}
                       </span>
                     </div>
 
-                    {/* Lista de Membros e Funções */}
-                    <div className="p-3.5 divide-y divide-slate-100 space-y-2">
+                    {/* Lista dos Membros Escalados */}
+                    <div className="p-3.5 divide-y divide-slate-100 space-y-2 flex-1">
                       {dept.items.map((item, idx) => (
                         <div key={idx} className={`${idx > 0 ? "pt-2" : ""} flex items-center justify-between gap-2`}>
                           <div className="flex items-center gap-2 min-w-0">
@@ -397,7 +392,7 @@ export function DailyScheduleCard({ churchName, district }: Props) {
                               {item.member_name}
                             </span>
                           </div>
-                          <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md shrink-0 border border-slate-200/60">
+                          <span className="text-[11px] font-semibold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-md shrink-0 border border-slate-200/80">
                             {item.role_name}
                           </span>
                         </div>
