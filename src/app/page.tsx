@@ -16,6 +16,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { IasdLogo } from "@/components/IasdLogo";
+import { DailyScheduleCard } from "@/components/DailyScheduleCard";
 import { getCurrentMonthYear, formatMonthYear, isCurrentMonth, formatDateDDMMAAAA, sanitizeScheduleTitle } from "@/lib/dateUtils";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -132,6 +133,12 @@ export default function HomePage() {
           </div>
         </div>
       </div>
+
+      {/* Campo com as Escalas do Dia / Próximo Culto (com botão para gerar imagem) */}
+      <DailyScheduleCard 
+        churchName={church?.name} 
+        district={church?.district} 
+      />
 
       {/* Cabeçalho da Lista: Escalas do Mês Vigente e Busca Rápida */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
