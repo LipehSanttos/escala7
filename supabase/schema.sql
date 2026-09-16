@@ -232,16 +232,23 @@ ON public.schedule_requests FOR INSERT
 TO authenticated
 WITH CHECK (true);
 
-CREATE POLICY "Aprovação e recusa de solicitações por líderes"
-ON public.schedule_requests FOR UPDATE
-TO authenticated
-USING (true)
-WITH CHECK (true);
+-- ==============================================================================
+-- 4.8 CONCESSÃO DE PERMISSÕES DE TABELA (Necessário para a API do Supabase e RLS)
+-- ==============================================================================
+GRANT USAGE ON SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+GRANT ALL ON ALL ROUTINES IN SCHEMA public TO postgres, anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO postgres, anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON ROUTINES TO postgres, anon, authenticated, service_role;
 
 -- ==============================================================================
 -- 5. SEED INICIAL COM OS MINISTÉRIOS OFICIAIS DA IASD
 -- ==============================================================================
 INSERT INTO public.churches (name, district, city, state)
+
 VALUES ('Igreja Adventista do Sétimo Dia', 'Distrito Central', 'Central', 'BR')
 ON CONFLICT DO NOTHING;
 
