@@ -1,8 +1,27 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import { getSupabase, getServiceRoleClient } from "@/lib/supabase";
 import db from "@/lib/db";
 
 export async function GET() {
   try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("roles")
+        .select("*, departments(name, color)")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+
+      const formatted = (data || []).map((r: any) => ({
+        ...r,
+        department_name: r.departments?.name || "",
+        department_color: r.departments?.color || "#002F6C"
+      }));
+
+      return NextResponse.json({ success: true, data: formatted });
+    }
+
     const roles = db.prepare(`
       SELECT r.*, d.name as department_name, d.color as department_color
       FROM roles r
@@ -22,6 +41,23 @@ export async function POST(request: Request) {
     const { department_id, name, description } = body;
 
     const id = `${department_id}_${name.toLowerCase().replace(/[^a-z0-9]/g, "_").slice(0, 20)}_${Date.now().toString().slice(-4)}`;
+
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("roles")
+        .insert({
+          id,
+          department_id,
+          name,
+          description: description || ""
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return NextResponse.json({ success: true, data });
+    }
 
     db.prepare(`
       INSERT INTO roles (id, department_id, name, description)

@@ -1,8 +1,66 @@
 import { NextResponse } from "next/server";
+import { getSupabase, getServiceRoleClient } from "@/lib/supabase";
 import db from "@/lib/db";
 
 export async function GET() {
   try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const [membersRes, rolesRes, deptsRes] = await Promise.all([
+        supabase.from("members").select("*").order("name", { ascending: true }),
+        supabase.from("member_roles").select("member_id, role_id, roles(id, name, department_id, departments(name, color))"),
+        supabase.from("member_departments").select("member_id, department_id, is_department_leader, departments(name, color)")
+      ]);
+
+      const allMembers = membersRes.data || [];
+      const memberMap = new Map(allMembers.map(m => [m.id, m]));
+
+      const formatted = allMembers.map((m: any) => {
+        const { password, password_hash, ...safeMember } = m;
+        const parent = m.parent_id ? memberMap.get(m.parent_id) : null;
+
+        const mRoles = (rolesRes.data || [])
+          .filter((r: any) => r.member_id === m.id)
+          .map((r: any) => ({
+            role_id: r.role_id,
+            role_name: r.roles?.name || "",
+            department_id: r.roles?.department_id || "",
+            department_name: r.roles?.departments?.name || "",
+            department_color: r.roles?.departments?.color || "#002F6C"
+          }));
+
+        const mDepts = (deptsRes.data || [])
+          .filter((d: any) => d.member_id === m.id)
+          .map((d: any) => ({
+            department_id: d.department_id,
+            is_department_leader: Boolean(d.is_department_leader),
+            department_name: d.departments?.name || "",
+            department_color: d.departments?.color || "#002F6C"
+          }));
+
+        const children = allMembers
+          .filter((c: any) => c.parent_id === m.id)
+          .map((c: any) => ({ id: c.id, name: c.name }));
+
+        return {
+          ...safeMember,
+          is_active: Boolean(m.is_active),
+          is_leader: Boolean(m.is_leader),
+          is_child: Boolean(m.is_child),
+          parent_id: m.parent_id || null,
+          parent_name: parent?.name || "",
+          parent_phone: parent?.phone || "",
+          leader_status: m.leader_status || (m.is_leader ? "approved" : "none"),
+          leader_nominated_by: m.leader_nominated_by || "",
+          roles: mRoles,
+          departments: mDepts,
+          children
+        };
+      });
+
+      return NextResponse.json({ success: true, data: formatted });
+    }
+
     const members = db.prepare(`
       SELECT m.*, p.name as parent_name, p.phone as parent_phone
       FROM members m
@@ -53,7 +111,7 @@ interface LeaderAuthResult {
   userName: string;
 }
 
-function getLeaderAuthDetails(authData: { user_id?: string; user_phone?: string; pin?: string }): LeaderAuthResult {
+async function getLeaderAuthDetails(authData: { user_id?: string; user_phone?: string; pin?: string }): Promise<LeaderAuthResult> {
   const { user_id, user_phone, pin } = authData;
   const rawPin = (pin || "").trim();
   const cleanPhone = user_phone ? user_phone.replace(/\D/g, "") : "";
@@ -69,6 +127,18 @@ function getLeaderAuthDetails(authData: { user_id?: string; user_phone?: string;
   if (!user_id && !user_phone) {
     return { isAuthorized: false, isGeneralAdmin: false, userName: "" };
   }
+
+  const supabase = getServiceRoleClient() || getSupabase();
+  if (supabase) {
+    let q = supabase.from("members").select("id, name, is_leader").limit(1);
+    if (user_id) q = q.eq("id", user_id);
+    else if (cleanPhone) q = q.eq("phone", cleanPhone);
+    const { data: mData } = await q;
+    if (!mData || mData.length === 0) return { isAuthorized: false, isGeneralAdmin: false, userName: "" };
+    const member = mData[0];
+    return { isAuthorized: Boolean(member.is_leader), isGeneralAdmin: false, userName: member.name || "Líder" };
+  }
+
   const member = db.prepare(`
     SELECT m.*,
       (SELECT COUNT(*) FROM member_departments md WHERE md.member_id = m.id AND md.is_department_leader = 1) as is_dept_leader,
@@ -85,6 +155,7 @@ function getLeaderAuthDetails(authData: { user_id?: string; user_phone?: string;
   return { isAuthorized, isGeneralAdmin: false, userName: member.name || "Líder" };
 }
 
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -93,7 +164,7 @@ export async function POST(request: Request) {
       role_ids, department_ids, leader_department_ids, user_id, user_phone, pin 
     } = body;
 
-    const auth = getLeaderAuthDetails({ user_id, user_phone, pin });
+    const auth = await getLeaderAuthDetails({ user_id, user_phone, pin });
     // Apenas líder / responsável autenticado pode cadastrar membros
     if (!auth.isAuthorized) {
       return NextResponse.json({
@@ -220,7 +291,7 @@ export async function PUT(request: Request) {
     const body = await request.json();
     const { id, name, phone, email, is_active, is_leader, is_child, parent_id, role_ids, department_ids, leader_department_ids, user_id, user_phone, pin, action } = body;
 
-    const auth = getLeaderAuthDetails({ user_id, user_phone, pin });
+    const auth = await getLeaderAuthDetails({ user_id, user_phone, pin });
     // Apenas líder / responsável autenticado pode alterar dados de membros
     if (!auth.isAuthorized) {
       return NextResponse.json({
@@ -461,7 +532,7 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ success: false, error: "ID não fornecido" }, { status: 400 });
     }
 
-    const auth = getLeaderAuthDetails({ user_id, user_phone, pin });
+    const auth = await getLeaderAuthDetails({ user_id, user_phone, pin });
     // Apenas líder / responsável autenticado pode remover membros
     if (!auth.isAuthorized) {
       return NextResponse.json({

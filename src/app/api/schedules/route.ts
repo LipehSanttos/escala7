@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { getSupabase, getServiceRoleClient } from "@/lib/supabase";
 import db from "@/lib/db";
-import { getCurrentMonthYear } from "@/lib/dateUtils";
+import { getCurrentMonthYear, sanitizeScheduleTitle } from "@/lib/dateUtils";
 
 export async function GET(request: Request) {
   try {
@@ -8,6 +9,41 @@ export async function GET(request: Request) {
     const department_id = searchParams.get("department_id");
     const month_year = searchParams.get("month_year");
     const status = searchParams.get("status");
+
+    const supabase = getSupabase();
+    if (supabase) {
+      let q = supabase
+        .from("schedules")
+        .select("*, departments(name, color, icon), schedule_items(id, member_id)");
+
+      if (department_id) q = q.eq("department_id", department_id);
+      if (month_year) q = q.eq("month_year", month_year);
+      if (status) q = q.eq("status", status);
+
+      const { data, error } = await q.order("month_year", { ascending: false }).order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const schedules = (data || []).map((s: any) => {
+        const items = s.schedule_items || [];
+        const total_items = items.length;
+        const distinctMembers = new Set(items.map((i: any) => i.member_id).filter(Boolean));
+        const vacant_items_count = items.filter((i: any) => !i.member_id).length;
+
+        return {
+          ...s,
+          title: sanitizeScheduleTitle(s.title, s.month_year),
+          department_name: s.departments?.name || "",
+          department_color: s.departments?.color || "#002F6C",
+          department_icon: s.departments?.icon || "Calendar",
+          total_items,
+          total_members_scheduled: distinctMembers.size,
+          vacant_items_count,
+          schedule_items: undefined
+        };
+      });
+
+      return NextResponse.json({ success: true, data: schedules });
+    }
 
     let query = `
       SELECT 
@@ -52,12 +88,10 @@ export async function GET(request: Request) {
   }
 }
 
-import { getStandardScheduleTitle, sanitizeScheduleTitle } from "@/lib/dateUtils";
-
-function checkLeaderAuth(
+async function checkLeaderAuth(
   authData: { user_id?: string; user_phone?: string; pin?: string },
   departmentId?: string
-): { authorized: boolean; reason?: string } {
+): Promise<{ authorized: boolean; reason?: string }> {
   const { user_id, user_phone, pin } = authData;
   const rawPin = (pin || "").trim();
   const cleanPhone = user_phone ? user_phone.replace(/\D/g, "") : "";
@@ -72,6 +106,37 @@ function checkLeaderAuth(
   if (!user_id && !user_phone) {
     return { authorized: false, reason: "Usuário deslogado. Faça login como líder ou responsável." };
   }
+
+  const supabase = getServiceRoleClient() || getSupabase();
+  if (supabase) {
+    let memberQuery = supabase.from("members").select("id, name, is_leader").limit(1);
+    if (user_id) memberQuery = memberQuery.eq("id", user_id);
+    else if (cleanPhone) memberQuery = memberQuery.eq("phone", cleanPhone);
+    const { data: mData } = await memberQuery;
+    if (!mData || mData.length === 0) {
+      return { authorized: false, reason: "Membro não cadastrado no sistema." };
+    }
+    const member = mData[0];
+
+    if (departmentId) {
+      const { data: deptRows } = await supabase
+        .from("member_departments")
+        .select("is_department_leader")
+        .eq("member_id", member.id)
+        .eq("department_id", departmentId)
+        .eq("is_department_leader", true);
+
+      if (deptRows && deptRows.length > 0) return { authorized: true };
+      return {
+        authorized: false,
+        reason: `Acesso restrito: Cada responsável só pode gerenciar o departamento designado a ele.`
+      };
+    }
+
+    if (member.is_leader) return { authorized: true };
+    return { authorized: false, reason: "Acesso restrito: Apenas líderes e responsáveis autorizados podem elaborar escalas." };
+  }
+
   const member = db.prepare(`
     SELECT m.*
     FROM members m
@@ -82,7 +147,6 @@ function checkLeaderAuth(
     return { authorized: false, reason: "Membro não cadastrado no sistema." };
   }
 
-  // Se foi fornecido o departamento da escala, verificar se é líder especificamente dele
   if (departmentId) {
     const isDeptLeader = db.prepare(`
       SELECT COUNT(*) as count 
@@ -120,8 +184,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const { department_id, title, month_year, author_name, notes, status, items, user_id, user_phone, pin } = body;
 
-    // Apenas líder / responsável autenticado do departamento especificado pode elaborar a escala
-    const auth = checkLeaderAuth({ user_id, user_phone, pin }, department_id);
+    const auth = await checkLeaderAuth({ user_id, user_phone, pin }, department_id);
     if (!auth.authorized) {
       return NextResponse.json({
         success: false,
@@ -138,6 +201,44 @@ export async function POST(request: Request) {
 
     const scheduleId = "sch_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      const { error: sErr } = await supabase.from("schedules").insert({
+        id: scheduleId,
+        department_id,
+        title,
+        month_year,
+        author_name,
+        status: status || "published",
+        notes: notes || ""
+      });
+      if (sErr) throw sErr;
+
+      if (Array.isArray(items) && items.length > 0) {
+        const scheduleItemsToInsert = items
+          .filter(it => it.date && it.role_id && it.member_id)
+          .map(it => ({
+            id: "item_" + Math.random().toString(36).slice(2, 9),
+            schedule_id: scheduleId,
+            date: it.date,
+            service_type: it.service_type || "Culto de Sábado",
+            role_id: it.role_id,
+            member_id: it.member_id,
+            notes: it.notes || ""
+          }));
+
+        if (scheduleItemsToInsert.length > 0) {
+          const { error: itemsErr } = await supabase.from("schedule_items").insert(scheduleItemsToInsert);
+          if (itemsErr) throw itemsErr;
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        data: { id: scheduleId, message: "Escala criada com sucesso!" }
+      });
+    }
+
     // Iniciar transação no SQLite
     const insertSchedule = db.prepare(`
       INSERT INTO schedules (id, department_id, title, month_year, author_name, status, notes)
@@ -148,50 +249,6 @@ export async function POST(request: Request) {
       INSERT INTO schedule_items (id, schedule_id, date, service_type, role_id, member_id, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
-
-    // Validação de conflitos pré-salvamento
-    if (Array.isArray(items) && items.length > 0) {
-      // 1. Conflito interno (duas funções para o mesmo membro no mesmo dia na própria escala)
-      const dayMemberMap = new Map<string, string>();
-      for (const item of items) {
-        if (!item.member_id || !item.date) continue;
-        const key = `${item.date}_${item.member_id}`;
-        if (dayMemberMap.has(key)) {
-          const member = db.prepare("SELECT name FROM members WHERE id = ?").get(item.member_id) as any;
-          return NextResponse.json({
-            success: false,
-            error: `Conflito detectado: O membro "${member?.name || item.member_id}" foi escalado mais de uma vez no dia ${item.date}.`
-          }, { status: 400 });
-        }
-        dayMemberMap.set(key, item.role_id);
-      }
-
-      // 2. Conflito externo (com outras escalas já salvas na mesma data)
-      for (const item of items) {
-        if (!item.member_id || !item.date) continue;
-        const conflict = db.prepare(`
-          SELECT 
-            si.date,
-            r.name as role_name,
-            d.name as department_name,
-            m.name as member_name
-          FROM schedule_items si
-          JOIN schedules s ON si.schedule_id = s.id
-          JOIN departments d ON s.department_id = d.id
-          JOIN roles r ON si.role_id = r.id
-          JOIN members m ON si.member_id = m.id
-          WHERE si.member_id = ? AND si.date = ?
-          LIMIT 1
-        `).get(item.member_id, item.date) as any;
-
-        if (conflict) {
-          return NextResponse.json({
-            success: false,
-            error: `Conflito detectado: O membro "${conflict.member_name}" já está escalado no dia ${conflict.date} no departamento "${conflict.department_name}" para a função "${conflict.role_name}".`
-          }, { status: 400 });
-        }
-      }
-    }
 
     const tx = db.transaction(() => {
       insertSchedule.run(

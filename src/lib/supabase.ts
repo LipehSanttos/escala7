@@ -1,26 +1,70 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+let _client: SupabaseClient | null = null;
+let _adminClient: SupabaseClient | null = null;
+
+export const isSupabaseConfigured = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+  (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)
+);
 
 /**
- * Cliente Supabase para uso no Frontend e em componentes públicos (sujeito às regras de RLS).
+ * Retorna o cliente Supabase para leitura pública e operações autenticadas (RLS).
+ * Retorna null se as variáveis não estiverem configuradas no ambiente.
  */
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+export function getSupabase(): SupabaseClient | null {
+  if (_client) return _client;
 
-/**
- * Cria cliente administrativo com Service Role Key para operações seguras de backend (bypass de RLS).
- * NUNCA utilize esta chave no lado do cliente (browser).
- */
-export function getServiceRoleClient() {
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!serviceRoleKey) {
-    throw new Error("SUPABASE_SERVICE_ROLE_KEY não configurada nas variáveis de ambiente.");
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !anonKey) {
+    return null;
   }
-  return createClient(supabaseUrl, serviceRoleKey, {
+
+  _client = createClient(url, anonKey, {
     auth: {
-      autoRefreshToken: false,
-      persistSession: false,
+      persistSession: true,
+      autoRefreshToken: true,
     },
   });
+
+  return _client;
 }
+
+/**
+ * Retorna o cliente administrativo com service_role (operações privilegiadas no backend).
+ * Retorna o cliente público caso service_role não esteja definida.
+ */
+export function getServiceRoleClient(): SupabaseClient | null {
+  if (_adminClient) return _adminClient;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) {
+    return null;
+  }
+
+  _adminClient = createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  return _adminClient;
+}
+
+// Proxy seguro para evitar quebras se o cliente for chamado antes da inicialização das variáveis
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getSupabase();
+    if (!client) {
+      throw new Error(
+        "Supabase não configurado. Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY nas variáveis de ambiente."
+      );
+    }
+    return (client as any)[prop];
+  },
+});

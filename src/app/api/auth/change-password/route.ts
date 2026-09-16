@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getSupabase, getServiceRoleClient } from "@/lib/supabase";
 import db from "@/lib/db";
 
 export async function POST(request: Request) {
@@ -10,14 +11,6 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { success: false, error: "Identificação do usuário necessária." },
         { status: 400 }
-      );
-    }
-
-    const member = db.prepare("SELECT * FROM members WHERE id = ?").get(user_id) as any;
-    if (!member) {
-      return NextResponse.json(
-        { success: false, error: "Membro não encontrado." },
-        { status: 404 }
       );
     }
 
@@ -45,9 +38,53 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validação da senha atual:
-    // Se o membro já possuir senha customizada, confere com member.password
-    // Se ainda não tiver senha customizada, a senha atual deve ser o próprio telefone
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      const { data: member, error: mErr } = await supabase
+        .from("members")
+        .select("*")
+        .eq("id", user_id)
+        .limit(1)
+        .maybeSingle();
+
+      if (mErr || !member) {
+        return NextResponse.json({ success: false, error: "Membro não encontrado." }, { status: 404 });
+      }
+
+      const existingPass = member.password_hash || member.password;
+      if (existingPass && String(existingPass).trim().length > 0) {
+        if (currentPass !== String(existingPass).trim()) {
+          return NextResponse.json({ success: false, error: "A senha atual informada está incorreta." }, { status: 400 });
+        }
+      } else {
+        const cleanCurrent = currentPass.replace(/\D/g, "");
+        const cleanPhone = (member.phone || "").replace(/\D/g, "");
+        if (currentPass !== member.phone && cleanCurrent !== cleanPhone) {
+          return NextResponse.json({ success: false, error: "A senha atual informada está incorreta." }, { status: 400 });
+        }
+      }
+
+      const { error: updErr } = await supabase
+        .from("members")
+        .update({ password_hash: newPass, updated_at: new Date().toISOString() })
+        .eq("id", member.id);
+
+      if (updErr) throw updErr;
+
+      return NextResponse.json({
+        success: true,
+        message: "Senha alterada com sucesso! Use sua nova senha nos próximos acessos."
+      });
+    }
+
+    const member = db.prepare("SELECT * FROM members WHERE id = ?").get(user_id) as any;
+    if (!member) {
+      return NextResponse.json(
+        { success: false, error: "Membro não encontrado." },
+        { status: 404 }
+      );
+    }
+
     if (member.password && member.password.trim().length > 0) {
       if (currentPass !== member.password) {
         return NextResponse.json(
@@ -69,7 +106,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Atualiza a nova senha
     db.prepare(`
       UPDATE members
       SET password = ?, updated_at = CURRENT_TIMESTAMP
