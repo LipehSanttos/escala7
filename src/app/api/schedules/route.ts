@@ -199,10 +199,53 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
+    const validItems = Array.isArray(items)
+      ? items.filter((it: any) => it.date && it.role_id && it.member_id)
+      : [];
+
+    // 1. Validação de Duplicidade Interna: O mesmo membro NÃO pode estar duas vezes na mesma data
+    const internalDatesMap = new Map<string, Set<string>>();
+    for (const it of validItems) {
+      if (!internalDatesMap.has(it.date)) internalDatesMap.set(it.date, new Set());
+      if (internalDatesMap.get(it.date)!.has(it.member_id)) {
+        return NextResponse.json({
+          success: false,
+          error: `Não deve ser possível criar duplicidade na escala. O mesmo membro foi alocado mais de uma vez na data ${it.date}.`
+        }, { status: 400 });
+      }
+      internalDatesMap.get(it.date)!.add(it.member_id);
+    }
+
     const scheduleId = "sch_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
     const supabase = getServiceRoleClient() || getSupabase();
     if (supabase) {
+      // 2. Validação de Conflito Geral Cruzado: O membro não pode estar escalado em outro departamento no mesmo dia
+      if (validItems.length > 0) {
+        const memberIds = [...new Set(validItems.map((it: any) => it.member_id))];
+        const dates = [...new Set(validItems.map((it: any) => it.date))];
+
+        const { data: existingAllocations, error: confErr } = await supabase
+          .from("schedule_items")
+          .select("id, date, member_id, schedules(id, title, departments(name)), roles(name), members(name)")
+          .in("member_id", memberIds)
+          .in("date", dates);
+
+        if (!confErr && existingAllocations && existingAllocations.length > 0) {
+          for (const it of validItems) {
+            const conflict = existingAllocations.find((ex: any) => ex.date === it.date && ex.member_id === it.member_id);
+            if (conflict) {
+              const mName = (conflict as any).members?.name || "Este membro";
+              const dName = (conflict as any).schedules?.departments?.name || "outro departamento";
+              return NextResponse.json({
+                success: false,
+                error: `Conflito de escala: O membro "${mName}" já está escalado(a) no departamento "${dName}" no dia ${it.date}. Não é permitida duplicidade de membro no mesmo dia.`
+              }, { status: 400 });
+            }
+          }
+        }
+      }
+
       const { error: sErr } = await supabase.from("schedules").insert({
         id: scheduleId,
         department_id,
@@ -237,6 +280,26 @@ export async function POST(request: Request) {
         success: true,
         data: { id: scheduleId, message: "Escala criada com sucesso!" }
       });
+    }
+
+    // 2. Validação de Conflito Geral Cruzado no SQLite
+    for (const it of validItems) {
+      const conflict = db.prepare(`
+        SELECT si.*, d.name as department_name, m.name as member_name
+        FROM schedule_items si
+        JOIN schedules s ON si.schedule_id = s.id
+        JOIN departments d ON s.department_id = d.id
+        JOIN members m ON si.member_id = m.id
+        WHERE si.member_id = ? AND si.date = ?
+        LIMIT 1
+      `).get(it.member_id, it.date) as any;
+
+      if (conflict) {
+        return NextResponse.json({
+          success: false,
+          error: `Conflito de escala: O membro "${conflict.member_name}" já está escalado(a) no departamento "${conflict.department_name}" no dia ${it.date}. Não é permitida duplicidade de membro no mesmo dia.`
+        }, { status: 400 });
+      }
     }
 
     // Iniciar transação no SQLite

@@ -13,21 +13,41 @@ export async function GET() {
 
       if (error) throw error;
 
-      const formatted = (data || []).map((r: any) => ({
-        ...r,
-        department_name: r.departments?.name || "",
-        department_color: r.departments?.color || "#002F6C"
-      }));
+      const formatted = (data || [])
+        .filter((r: any) => {
+          if (r.department_id === "recepcao") {
+            return r.name?.toLowerCase() === "recepção" || r.id === "role_recepcao" || r.id === "recepcao_padrao";
+          }
+          return true;
+        })
+        .map((r: any) => ({
+          ...r,
+          name: r.department_id === "recepcao" ? "Recepção" : r.name,
+          department_name: r.departments?.name || "",
+          department_color: r.departments?.color || "#002F6C"
+        }));
 
       return NextResponse.json({ success: true, data: formatted });
     }
 
-    const roles = db.prepare(`
+    const allDbRoles = db.prepare(`
       SELECT r.*, d.name as department_name, d.color as department_color
       FROM roles r
       JOIN departments d ON r.department_id = d.id
       ORDER BY d.name ASC, r.name ASC
-    `).all();
+    `).all() as any[];
+
+    const roles = allDbRoles
+      .filter((r: any) => {
+        if (r.department_id === "recepcao") {
+          return r.name?.toLowerCase() === "recepção" || r.id === "role_recepcao" || r.id === "recepcao_padrao";
+        }
+        return true;
+      })
+      .map((r: any) => ({
+        ...r,
+        name: r.department_id === "recepcao" ? "Recepção" : r.name
+      }));
 
     return NextResponse.json({ success: true, data: roles });
   } catch (error: any) {

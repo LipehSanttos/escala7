@@ -13,10 +13,29 @@ export async function GET() {
 
       if (dErr) throw dErr;
       const allRoles = roles || [];
-      const deptsWithRoles = (depts || []).map((dept: any) => ({
-        ...dept,
-        roles: allRoles.filter((r: any) => r.department_id === dept.id)
-      }));
+      const deptsWithRoles = (depts || []).map((dept: any) => {
+        let deptRoles = allRoles.filter((r: any) => r.department_id === dept.id);
+        if (dept.id === "recepcao" || dept.name?.toLowerCase() === "recepção" || dept.name?.toLowerCase() === "recepcao") {
+          // No departamento recepção só precisará ter uma função padrão: Recepção
+          const stdRole = deptRoles.find((r: any) => r.name?.toLowerCase() === "recepção" || r.id === "role_recepcao" || r.id === "recepcao_padrao");
+          if (stdRole) {
+            deptRoles = [{ ...stdRole, name: "Recepção" }];
+          } else if (deptRoles.length > 0) {
+            deptRoles = [{ ...deptRoles[0], name: "Recepção" }];
+          } else {
+            deptRoles = [{
+              id: "role_recepcao",
+              department_id: dept.id,
+              name: "Recepção",
+              description: "Acolhimento e recepção aos membros e visitantes"
+            }];
+          }
+        }
+        return {
+          ...dept,
+          roles: deptRoles
+        };
+      });
 
       return NextResponse.json({ success: true, data: deptsWithRoles });
     }
@@ -24,10 +43,28 @@ export async function GET() {
     const departments = db.prepare("SELECT * FROM departments ORDER BY name ASC").all();
     const roles = db.prepare("SELECT * FROM roles ORDER BY name ASC").all();
 
-    const deptsWithRoles = departments.map((dept: any) => ({
-      ...dept,
-      roles: roles.filter((r: any) => r.department_id === dept.id)
-    }));
+    const deptsWithRoles = departments.map((dept: any) => {
+      let deptRoles = roles.filter((r: any) => r.department_id === dept.id);
+      if (dept.id === "recepcao" || dept.name?.toLowerCase() === "recepção" || dept.name?.toLowerCase() === "recepcao") {
+        const stdRole = deptRoles.find((r: any) => r.name?.toLowerCase() === "recepção" || r.id === "role_recepcao" || r.id === "recepcao_padrao");
+        if (stdRole) {
+          deptRoles = [{ ...stdRole, name: "Recepção" }];
+        } else if (deptRoles.length > 0) {
+          deptRoles = [{ ...deptRoles[0], name: "Recepção" }];
+        } else {
+          deptRoles = [{
+            id: "role_recepcao",
+            department_id: dept.id,
+            name: "Recepção",
+            description: "Acolhimento e recepção aos membros e visitantes"
+          }];
+        }
+      }
+      return {
+        ...dept,
+        roles: deptRoles
+      };
+    });
 
     return NextResponse.json({ success: true, data: deptsWithRoles });
   } catch (error: any) {

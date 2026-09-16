@@ -181,6 +181,107 @@ export async function POST(request: Request) {
     let cleanPhone = (phone || "").replace(/\D/g, "");
     let effectiveParentId: string | null = null;
 
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      if (isChild) {
+        if (!parent_id) {
+          return NextResponse.json({
+            success: false,
+            error: "Para cadastrar uma criança sem telefone próprio, selecione o responsável cadastrado."
+          }, { status: 400 });
+        }
+        const { data: parent } = await supabase.from("members").select("*").eq("id", parent_id).maybeSingle();
+        if (!parent) {
+          return NextResponse.json({ success: false, error: "Responsável selecionado não encontrado." }, { status: 404 });
+        }
+        cleanPhone = parent.phone;
+        effectiveParentId = parent.id;
+      } else {
+        if (!cleanPhone || cleanPhone.length < 10) {
+          return NextResponse.json({ success: false, error: "Informe um número de WhatsApp válido com DDD." }, { status: 400 });
+        }
+        const { data: existingAdults } = await supabase
+          .from("members")
+          .select("id, name")
+          .eq("phone", cleanPhone)
+          .or("is_child.eq.false,is_child.is.null")
+          .limit(1);
+
+        if (existingAdults && existingAdults.length > 0) {
+          return NextResponse.json({
+            success: false,
+            error: `Já existe um membro titular cadastrado com este WhatsApp (${existingAdults[0].name}). Se este cadastro for para uma criança/dependente, selecione a opção de criança.`
+          }, { status: 400 });
+        }
+      }
+
+      const id = "m_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+      let effectiveIsLeader = 0;
+      let leaderStatus = "none";
+      let leaderNominatedBy = "";
+
+      const hasLeaderDepts = Array.isArray(leader_department_ids) && leader_department_ids.length > 0;
+
+      if (!isChild && (is_leader || hasLeaderDepts)) {
+        if (auth.isGeneralAdmin) {
+          effectiveIsLeader = 1;
+          leaderStatus = "approved";
+        } else {
+          effectiveIsLeader = 0;
+          leaderStatus = "pending";
+          leaderNominatedBy = auth.userName;
+        }
+      }
+
+      const { error: insertErr } = await supabase.from("members").insert({
+        id,
+        name: name.trim(),
+        phone: cleanPhone,
+        email: email || "",
+        is_active: is_active !== undefined ? Boolean(is_active) : true,
+        is_leader: Boolean(effectiveIsLeader),
+        leader_status: leaderStatus,
+        leader_nominated_by: leaderNominatedBy,
+        is_child: isChild,
+        parent_id: effectiveParentId
+      });
+
+      if (insertErr) throw insertErr;
+
+      if (Array.isArray(role_ids) && role_ids.length > 0) {
+        const roleInserts = role_ids.map((rId: string) => ({ member_id: id, role_id: rId }));
+        await supabase.from("member_roles").insert(roleInserts);
+      }
+
+      if (Array.isArray(department_ids) && department_ids.length > 0) {
+        const deptInserts = department_ids.map((dId: string) => {
+          const isDeptLeader = (!isChild) && (
+            (Array.isArray(leader_department_ids) && leader_department_ids.includes(dId)) ||
+            (effectiveIsLeader === 1 && (!leader_department_ids || leader_department_ids.length === 0))
+          );
+          return {
+            member_id: id,
+            department_id: dId,
+            is_department_leader: Boolean(isDeptLeader)
+          };
+        });
+        await supabase.from("member_departments").insert(deptInserts);
+      }
+
+      const message = isChild
+        ? `Criança cadastrada com sucesso vinculada ao telefone do responsável!`
+        : leaderStatus === "pending"
+        ? `Membro cadastrado com sucesso! A indicação para líder foi enviada e aguarda aprovação do Administrador.`
+        : `Membro cadastrado com sucesso!`;
+
+      return NextResponse.json({
+        success: true,
+        message,
+        data: { id, name: name.trim(), phone: cleanPhone, is_child: isChild, parent_id: effectiveParentId, leader_status: leaderStatus }
+      });
+    }
+
     if (isChild) {
       if (!parent_id) {
         return NextResponse.json({
@@ -279,7 +380,7 @@ export async function POST(request: Request) {
       data: { id, name: name.trim(), phone: cleanPhone, is_child: isChild, parent_id: effectiveParentId, leader_status: leaderStatus } 
     });
   } catch (error: any) {
-    if (error.message.includes("idx_members_phone_adults") || error.message.includes("UNIQUE constraint failed")) {
+    if (error.message?.includes("idx_members_phone_adults") || error.message?.includes("UNIQUE constraint failed")) {
       return NextResponse.json({ success: false, error: "Já existe um membro titular cadastrado com este número de WhatsApp." }, { status: 400 });
     }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
@@ -298,6 +399,225 @@ export async function PUT(request: Request) {
         success: false,
         error: "Acesso restrito: Somente um líder ou responsável autenticado pode alterar dados de membros."
       }, { status: 403 });
+    }
+
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      if (action === "set_leader") {
+        if (!auth.isGeneralAdmin && !auth.isAuthorized) {
+          return NextResponse.json({ success: false, error: "Apenas o Administrador ou liderança superior pode definir líderes." }, { status: 403 });
+        }
+        const targetDeptId = body.department_id;
+        const targetLeaderDeptIds = body.leader_department_ids;
+
+        await supabase
+          .from("members")
+          .update({ is_leader: true, leader_status: "approved", updated_at: new Date().toISOString() })
+          .eq("id", id);
+
+        if (Array.isArray(targetLeaderDeptIds) && targetLeaderDeptIds.length > 0) {
+          for (const dId of targetLeaderDeptIds) {
+            await supabase.from("member_departments").upsert({
+              member_id: id,
+              department_id: dId,
+              is_department_leader: true
+            });
+          }
+        } else if (targetDeptId) {
+          await supabase.from("member_departments").upsert({
+            member_id: id,
+            department_id: targetDeptId,
+            is_department_leader: true
+          });
+        } else {
+          await supabase.from("member_departments").update({ is_department_leader: true }).eq("member_id", id);
+        }
+        return NextResponse.json({ success: true, message: "Membro definido como líder com sucesso e sem restrições!" });
+      }
+
+      if (action === "demote_leader") {
+        if (!auth.isGeneralAdmin && !auth.isAuthorized) {
+          return NextResponse.json({ success: false, error: "Apenas o Administrador pode alterar perfis." }, { status: 403 });
+        }
+        await supabase
+          .from("members")
+          .update({ is_leader: false, leader_status: "none", leader_nominated_by: "", updated_at: new Date().toISOString() })
+          .eq("id", id);
+
+        await supabase.from("member_departments").update({ is_department_leader: false }).eq("member_id", id);
+        return NextResponse.json({ success: true, message: "Perfil do membro alterado para voluntário." });
+      }
+
+      if (action === "toggle_dept_leader") {
+        if (!auth.isGeneralAdmin && !auth.isAuthorized) {
+          return NextResponse.json({ success: false, error: "Apenas o Administrador pode definir liderança de departamentos." }, { status: 403 });
+        }
+        const targetDeptId = body.department_id;
+        if (!targetDeptId) return NextResponse.json({ success: false, error: "Departamento não informado." }, { status: 400 });
+
+        const { data: currentRel } = await supabase
+          .from("member_departments")
+          .select("is_department_leader")
+          .eq("member_id", id)
+          .eq("department_id", targetDeptId)
+          .maybeSingle();
+
+        const willBeLeader = currentRel && currentRel.is_department_leader ? false : true;
+
+        await supabase.from("member_departments").upsert({
+          member_id: id,
+          department_id: targetDeptId,
+          is_department_leader: willBeLeader
+        });
+
+        const { data: leaderDepts } = await supabase
+          .from("member_departments")
+          .select("department_id")
+          .eq("member_id", id)
+          .eq("is_department_leader", true);
+
+        if (leaderDepts && leaderDepts.length > 0) {
+          await supabase.from("members").update({ is_leader: true, leader_status: "approved", updated_at: new Date().toISOString() }).eq("id", id);
+        } else {
+          await supabase.from("members").update({ is_leader: false, leader_status: "none", updated_at: new Date().toISOString() }).eq("id", id);
+        }
+
+        return NextResponse.json({
+          success: true,
+          message: willBeLeader ? "Membro definido como líder do departamento!" : "Liderança do departamento removida.",
+          is_dept_leader: willBeLeader
+        });
+      }
+
+      if (action === "approve_leader") {
+        if (!auth.isGeneralAdmin && !auth.isAuthorized) {
+          return NextResponse.json({ success: false, error: "Apenas um administrador ou líder superior pode aprovar liderança." }, { status: 403 });
+        }
+        await supabase.from("members").update({ is_leader: true, leader_status: "approved", updated_at: new Date().toISOString() }).eq("id", id);
+        await supabase.from("member_departments").update({ is_department_leader: true }).eq("member_id", id);
+        return NextResponse.json({ success: true, message: "Indicação de líder aprovada com sucesso! O membro agora é líder oficial." });
+      }
+
+      if (action === "reject_leader") {
+        await supabase.from("members").update({ is_leader: false, leader_status: "none", leader_nominated_by: "", updated_at: new Date().toISOString() }).eq("id", id);
+        return NextResponse.json({ success: true, message: "Indicação de líder recusada." });
+      }
+
+      const { data: currentMember } = await supabase.from("members").select("*").eq("id", id).maybeSingle();
+      if (!currentMember) {
+        return NextResponse.json({ success: false, error: "Membro não encontrado." }, { status: 404 });
+      }
+
+      const isChild = is_child !== undefined ? Boolean(is_child) : Boolean(currentMember.is_child);
+      let cleanPhone = (phone || currentMember.phone || "").replace(/\D/g, "");
+      let effectiveParentId = currentMember.parent_id;
+
+      if (isChild) {
+        const targetParentId = parent_id || currentMember.parent_id;
+        if (!targetParentId) {
+          return NextResponse.json({ success: false, error: "Selecione o responsável cadastrado para esta criança." }, { status: 400 });
+        }
+        const { data: parent } = await supabase.from("members").select("*").eq("id", targetParentId).maybeSingle();
+        if (!parent) {
+          return NextResponse.json({ success: false, error: "Responsável selecionado não encontrado." }, { status: 404 });
+        }
+        cleanPhone = parent.phone;
+        effectiveParentId = parent.id;
+      } else {
+        effectiveParentId = null;
+        if (cleanPhone) {
+          const { data: existingAdults } = await supabase
+            .from("members")
+            .select("id, name")
+            .eq("phone", cleanPhone)
+            .neq("id", id)
+            .or("is_child.eq.false,is_child.is.null")
+            .limit(1);
+
+          if (existingAdults && existingAdults.length > 0) {
+            return NextResponse.json({
+              success: false,
+              error: `Já existe outro membro titular cadastrado com este WhatsApp (${existingAdults[0].name}).`
+            }, { status: 400 });
+          }
+        }
+      }
+
+      let effectiveIsLeader = Boolean(currentMember.is_leader);
+      let leaderStatus = currentMember.leader_status || "none";
+      let leaderNominatedBy = currentMember.leader_nominated_by || "";
+      const hasLeaderDepts = Array.isArray(leader_department_ids) && leader_department_ids.length > 0;
+
+      if (isChild) {
+        effectiveIsLeader = false;
+        leaderStatus = "none";
+        leaderNominatedBy = "";
+      } else if (is_leader !== undefined || hasLeaderDepts) {
+        if (is_leader || hasLeaderDepts) {
+          if (auth.isGeneralAdmin) {
+            effectiveIsLeader = true;
+            leaderStatus = "approved";
+          } else if (currentMember.is_leader && currentMember.leader_status === "approved") {
+            effectiveIsLeader = true;
+            leaderStatus = "approved";
+          } else {
+            effectiveIsLeader = false;
+            leaderStatus = "pending";
+            leaderNominatedBy = auth.userName;
+          }
+        } else {
+          effectiveIsLeader = false;
+          leaderStatus = "none";
+          leaderNominatedBy = "";
+        }
+      }
+
+      await supabase.from("members").update({
+        name: name !== undefined ? name.trim() : currentMember.name,
+        phone: cleanPhone,
+        email: email !== undefined ? email : currentMember.email,
+        is_active: is_active !== undefined ? Boolean(is_active) : currentMember.is_active,
+        is_leader: effectiveIsLeader,
+        leader_status: leaderStatus,
+        leader_nominated_by: leaderNominatedBy,
+        is_child: isChild,
+        parent_id: effectiveParentId,
+        updated_at: new Date().toISOString()
+      }).eq("id", id);
+
+      if (!isChild && cleanPhone) {
+        await supabase.from("members").update({ phone: cleanPhone }).eq("parent_id", id).eq("is_child", true);
+      }
+
+      if (Array.isArray(role_ids)) {
+        await supabase.from("member_roles").delete().eq("member_id", id);
+        if (role_ids.length > 0) {
+          const rolePayload = role_ids.map((rId: string) => ({ member_id: id, role_id: rId }));
+          await supabase.from("member_roles").insert(rolePayload);
+        }
+      }
+
+      if (Array.isArray(department_ids)) {
+        await supabase.from("member_departments").delete().eq("member_id", id);
+        if (department_ids.length > 0) {
+          const deptPayload = department_ids.map((dId: string) => {
+            const isDeptLeader = (Array.isArray(leader_department_ids) && leader_department_ids.includes(dId)) ||
+              (effectiveIsLeader && (!leader_department_ids || leader_department_ids.length === 0));
+            return {
+              member_id: id,
+              department_id: dId,
+              is_department_leader: Boolean(isDeptLeader)
+            };
+          });
+          await supabase.from("member_departments").insert(deptPayload);
+        }
+      }
+
+      const message = leaderStatus === "pending"
+        ? "Membro atualizado. A indicação para líder foi registrada e aguarda aprovação do Administrador."
+        : "Membro atualizado com sucesso";
+
+      return NextResponse.json({ success: true, message });
     }
 
     // O Administrador poderá definir qualquer membro para líder de qualquer departamento diretamente sem confirmação
@@ -539,6 +859,13 @@ export async function DELETE(request: Request) {
         success: false,
         error: "Acesso restrito: Somente um líder ou responsável autenticado pode remover membros."
       }, { status: 403 });
+    }
+
+    const supabase = getServiceRoleClient() || getSupabase();
+    if (supabase) {
+      const { error: delErr } = await supabase.from("members").delete().eq("id", id);
+      if (delErr) throw delErr;
+      return NextResponse.json({ success: true, message: "Membro removido com sucesso" });
     }
 
     db.prepare("DELETE FROM members WHERE id = ?").run(id);

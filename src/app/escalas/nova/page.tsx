@@ -187,6 +187,11 @@ export default function NovaEscalaPage() {
       currentDept.id === "diaconato" ||
       currentDept.name.toLowerCase().includes("diaconato");
 
+    const isRecepcao =
+      currentDept.id === "recepcao" ||
+      currentDept.name.toLowerCase().includes("recepção") ||
+      currentDept.name.toLowerCase().includes("recepcao");
+
     // Identificar funções específicas de Diácono e Diaconisa para o Diaconato
     let diacRole = currentDept.roles.find(
       (r) => r.id === "diac_escala" || r.name.toLowerCase().includes("diácono")
@@ -232,8 +237,18 @@ export default function NovaEscalaPage() {
 
       if (isDiaconato) {
         // Regra Especial de Diaconato: exatamente 2 pessoas para o mesmo dia (1 diácono e 1 diaconisa)
-        const chosenDiac = diaconosList.length > 0 ? diaconosList[diacIdx % diaconosList.length].id : "";
-        const chosenDiaconisa = diaconisasList.length > 0 ? diaconisasList[diaconisaIdx % diaconisasList.length].id : "";
+        let chosenDiac = diaconosList.length > 0 ? diaconosList[diacIdx % diaconosList.length].id : "";
+        let chosenDiaconisa = diaconisasList.length > 0 ? diaconisasList[diaconisaIdx % diaconisasList.length].id : "";
+
+        // Evitar que a mesma pessoa seja escalada duas vezes no mesmo dia
+        if (chosenDiac && chosenDiac === chosenDiaconisa) {
+          if (diaconisasList.length > 1) {
+            diaconisaIdx++;
+            chosenDiaconisa = diaconisasList[diaconisaIdx % diaconisasList.length].id;
+          } else {
+            chosenDiaconisa = "";
+          }
+        }
 
         if (diaconosList.length > 0) diacIdx++;
         if (diaconisasList.length > 0) diaconisaIdx++;
@@ -255,6 +270,41 @@ export default function NovaEscalaPage() {
           service_type: serviceType,
           role_id: diaconisaRole ? diaconisaRole.id : currentDept.roles[1]?.id || currentDept.roles[0]?.id || "",
           member_id: chosenDiaconisa,
+          notes: "",
+        });
+      } else if (isRecepcao) {
+        // Regra Especial de Recepção: departamento com função padrão 'Recepção' e 2 membros por culto
+        const recepRole = currentDept.roles[0] || { id: "role_recepcao", name: "Recepção" };
+        const pool = deptMembers.length > 0 ? deptMembers : activeMembers;
+
+        let chosen1 = "";
+        let chosen2 = "";
+
+        if (pool.length === 1) {
+          chosen1 = pool[0].id;
+          chosen2 = ""; // Não duplica o mesmo voluntário no mesmo dia
+        } else if (pool.length >= 2) {
+          chosen1 = pool[deptMemberIdx % pool.length].id;
+          deptMemberIdx++;
+          chosen2 = pool[deptMemberIdx % pool.length].id;
+          deptMemberIdx++;
+        }
+
+        generated.push({
+          temp_id: "row_" + Math.random().toString(36).slice(2, 9),
+          date: dateStr,
+          service_type: serviceType,
+          role_id: recepRole.id,
+          member_id: chosen1,
+          notes: "",
+        });
+
+        generated.push({
+          temp_id: "row_" + Math.random().toString(36).slice(2, 9),
+          date: dateStr,
+          service_type: serviceType,
+          role_id: recepRole.id,
+          member_id: chosen2,
           notes: "",
         });
       } else {
@@ -325,7 +375,7 @@ export default function NovaEscalaPage() {
       setItems((prev) =>
         prev.map((it) =>
           it.temp_id === row.temp_id
-            ? { ...it, conflictWarning: "Atenção: Este membro já está alocado em outra função nesta mesma data!" }
+            ? { ...it, conflictWarning: "⚠️ Duplicidade Proibida: Este membro já está alocado nesta mesma data nesta escala!" }
             : it
         )
       );
@@ -350,7 +400,7 @@ export default function NovaEscalaPage() {
             it.temp_id === row.temp_id
               ? {
                   ...it,
-                  conflictWarning: `⚠️ Conflito Externo: Já escalado em ${c.department_name} (${c.role_name}) nesta data!`,
+                  conflictWarning: `⚠️ Conflito Geral: Já escalado(a) no departamento "${c.department_name}" (${c.role_name}) nesta data! Não é permitida duplicidade de membro no mesmo dia.`,
                 }
               : it
           )
@@ -381,10 +431,24 @@ export default function NovaEscalaPage() {
       return;
     }
 
-    // Checar se há conflito não resolvido
-    const hasActiveConflicts = items.some((it) => it.conflictWarning);
-    if (hasActiveConflicts) {
-      setGlobalError("Existem conflitos de membros com mais de um cargo na mesma data. Por favor, resolva os alertas antes de salvar.");
+    // 1. Validação estrita de duplicidade interna na mesma data
+    const dateMemberMap = new Map<string, Set<string>>();
+    for (const it of items) {
+      if (!it.member_id) continue;
+      if (!dateMemberMap.has(it.date)) dateMemberMap.set(it.date, new Set());
+      if (dateMemberMap.get(it.date)!.has(it.member_id)) {
+        const m = members.find((mem) => mem.id === it.member_id);
+        const name = m?.name || "Este membro";
+        setGlobalError(`Não deve ser possível criar duplicidade na escala. O membro "${name}" foi alocado mais de uma vez no mesmo dia (${it.date}). Corrija a duplicidade antes de salvar.`);
+        return;
+      }
+      dateMemberMap.get(it.date)!.add(it.member_id);
+    }
+
+    // 2. Checar se há conflito não resolvido
+    const conflictItem = items.find((it) => it.conflictWarning);
+    if (conflictItem) {
+      setGlobalError(`Conflito de escala detectado: ${conflictItem.conflictWarning}. Por favor, altere o voluntário antes de salvar.`);
       return;
     }
 
@@ -784,11 +848,21 @@ export default function NovaEscalaPage() {
                         <option value="" className="text-slate-500 bg-white">-- Selecione o Membro --</option>
                         {members
                           .filter((m) => m.is_active)
-                          .map((m) => (
-                            <option key={m.id} value={m.id} className="text-slate-900 bg-white">
-                              {m.name}
-                            </option>
-                          ))}
+                          .map((m) => {
+                            const isAlreadyOnDate = items.some(
+                              (other) => other.temp_id !== item.temp_id && other.date === item.date && other.member_id === m.id
+                            );
+                            return (
+                              <option
+                                key={m.id}
+                                value={m.id}
+                                disabled={isAlreadyOnDate}
+                                className={isAlreadyOnDate ? "text-slate-400 bg-slate-100 italic" : "text-slate-900 bg-white"}
+                              >
+                                {m.name} {isAlreadyOnDate ? "⛔ (Já escalado nesta data)" : ""}
+                              </option>
+                            );
+                          })}
                       </select>
                     </div>
 

@@ -336,6 +336,39 @@ export default function EscalaDetalhesPage() {
 
     setReplaceSubmitting(true);
     try {
+      // 1. Checar duplicidade interna na mesma escala e mesma data
+      const intraDuplicate = (schedule?.items || []).some(
+        (it: any) =>
+          it.id !== replaceModalItem.scheduleItemId &&
+          it.date === replaceModalItem.date &&
+          it.member_id === replacementMemberId
+      );
+
+      if (intraDuplicate) {
+        alert("Não é permitida duplicidade: Este membro já está alocado nesta mesma data nesta escala.");
+        setReplaceSubmitting(false);
+        return;
+      }
+
+      // 2. Checar conflito cruzado em outros departamentos nesta mesma data
+      const confRes = await fetch("/api/schedules/check-conflict", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          member_id: replacementMemberId,
+          date: replaceModalItem.date,
+          exclude_item_id: replaceModalItem.scheduleItemId,
+          exclude_schedule_id: id,
+        }),
+      });
+      const confData = await confRes.json();
+      if (confData.hasConflict) {
+        const c = confData.conflicts[0];
+        alert(`Conflito de escala: O voluntário já está escalado(a) no departamento "${c.department_name}" (${c.role_name}) nesta data! Não é permitida duplicidade de membro no mesmo dia.`);
+        setReplaceSubmitting(false);
+        return;
+      }
+
       if (replaceModalItem.requestId) {
         // Resolução de pedido de ausência/troca pendente
         const res = await fetch("/api/schedules/requests", {
@@ -1255,11 +1288,24 @@ export default function EscalaDetalhesPage() {
                   <option value="" className="text-slate-400 bg-white">-- Selecione um membro --</option>
                   {allMembers
                     .filter((m) => m.is_active && m.name !== replaceModalItem.currentMemberName)
-                    .map((m) => (
-                      <option key={m.id} value={m.id} className="text-slate-900 bg-white">
-                        {m.name} {m.phone ? `(${m.phone})` : ""}
-                      </option>
-                    ))}
+                    .map((m) => {
+                      const isAlreadyOnDateInSchedule = (schedule?.items || []).some(
+                        (it: any) =>
+                          it.id !== replaceModalItem.scheduleItemId &&
+                          it.date === replaceModalItem.date &&
+                          it.member_id === m.id
+                      );
+                      return (
+                        <option
+                          key={m.id}
+                          value={m.id}
+                          disabled={isAlreadyOnDateInSchedule}
+                          className={isAlreadyOnDateInSchedule ? "text-slate-400 bg-slate-100 italic" : "text-slate-900 bg-white"}
+                        >
+                          {m.name} {isAlreadyOnDateInSchedule ? "⛔ (Já escalado nesta data)" : m.phone ? `(${m.phone})` : ""}
+                        </option>
+                      );
+                    })}
                 </select>
               </div>
 
