@@ -57,10 +57,15 @@ yarn-error.log*
 *.log
 scratch/
 
-# Vercel / Cloudflare builds temporários
+# Vercel / Cloudflare builds temporários e configurações com variáveis
 .vercel
 .wrangler
+.dev.vars
+wrangler.json
+wrangler.jsonc
+supabase/wrangler.json*
 .cloudflare
+
 
 # TypeScript cache
 *.tsbuildinfo
